@@ -1,0 +1,94 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: Secret scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Dependency vulnerability scan (pip-audit)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+      - name: SAST (Semgrep)
+        run: |
+          pip install semgrep
+          semgrep scan --config p/python --error app.py
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: Unit tests
+        run: pytest -v
+
+  build-and-upload:
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build artifact
+        id: build
+        run: |
+          VERSION=$(cat VERSION)
+          NAME="build-v${VERSION}-${{ github.run_number }}.zip"
+          zip -r "$NAME" app.py VERSION requirements.txt
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Upload to S3
+        run: |
+          aws s3 cp "${{ steps.build.outputs.name }}" "s3://${{ secrets.S3_BUCKET }}/builds/${{ steps.build.outputs.name }}"
+          aws s3 cp "${{ steps.build.outputs.name }}" "s3://${{ secrets.S3_BUCKET }}/builds/latest.zip"
+
+  deploy:
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy latest build from S3 to EC2
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["/opt/crickly/deploy.sh"]' \
+            --query "Command.CommandId" --output text)
+          aws ssm wait command-executed \
+            --command-id "$CMD_ID" --instance-id "${{ secrets.EC2_INSTANCE_ID }}"
+      - name: Verify production serves the new standings
+        run: |
+          sleep 5
+          EXPECTED=$(python -c "from app import compute_standings, MATCHES; print(compute_standings(MATCHES)[0]['team'])")
+          LIVE=$(curl -fsS "${{ secrets.APP_URL }}/api/standings" | python -c "import sys,json; print(json.load(sys.stdin)[0]['team'])")
+          echo "Expected leader: $EXPECTED | Live leader: $LIVE"
+          [ "$EXPECTED" = "$LIVE" ]
