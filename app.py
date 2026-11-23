@@ -9,9 +9,9 @@ MATCHES = [
     ("Karachi Kings", "Lahore Qalandars", "Lahore Qalandars"),
     ("Islamabad United", "Karachi Kings", "Islamabad United"),
     ("Lahore Qalandars", "Islamabad United", "Lahore Qalandars"),
-    # ("Karachi Kings", "Islamabad United", "Karachi Kings"),
-    # ("Karachi Kings", "Lahore Qalandars", "Karachi Kings"),
-    # ("Karachi Kings", "Islamabad United", "Karachi Kings"),
+    ("Karachi Kings", "Islamabad United", "Karachi Kings"),
+    ("Karachi Kings", "Lahore Qalandars", "Karachi Kings"),
+    ("Karachi Kings", "Islamabad United", "Karachi Kings"),
 ]
 
 def compute_standings(matches):
